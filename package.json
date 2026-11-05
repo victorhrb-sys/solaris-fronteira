@@ -1,0 +1,16 @@
+{
+  "name": "solaris-fronteira",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Turn-based space strategy with fog of war, bots and invite-only online rooms.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "python -m http.server 4173 --bind 127.0.0.1 --directory public",
+    "test": "node scripts/test.mjs",
+    "test:simulation": "node bot-simulation-test.mjs",
+    "test:browser": "node approved-map-browser-test.cjs"
+  }
+}

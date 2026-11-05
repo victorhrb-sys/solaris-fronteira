@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import {newGame,resolveCombat,upgrade,cost,advance,restoreGame,availableDefense,defenseCapacity,forecastStar,botPlan,setAutoRoute} from './fixtures/legacy-game.mjs';
+const star=(ships,points=0,level=Math.ceil(points/5))=>({id:0,owner:0,ships,defense:level,defensePoints:points,economy:0,industry:0});
+const fleet=(owner,ships)=>({owner,ships,from:1,to:0,total:1,remaining:1});
+for(const [a,b,survivors] of [[50,2,50],[20,10,15],[10,5,8],[10,9,2],[10,10,0]]){let r=resolveCombat(star(b),[fleet(1,a)]);assert.equal(r.ships,survivors);assert.equal(r.ownerAfter,a>b?1:0);assert.equal(r.tied,a===b);r=resolveCombat(star(a),[fleet(1,b)]);assert.equal(r.ships,survivors);assert.equal(r.ownerAfter,0);}
+let r=resolveCombat(star(100),[fleet(1,60),fleet(2,40)]);assert.equal(r.ships,70);assert.equal(r.rounds.length,2);assert.equal(r.forces.find(f=>f.owner===2).lost,40);
+assert.deepEqual(resolveCombat(star(100),[fleet(2,40),fleet(1,60)]).rounds,r.rounds,'Pair resolution must not depend on arrival order');
+r=resolveCombat(star(10),[fleet(1,9),fleet(2,8)]);assert.equal(r.ships,2);assert.equal(r.ownerAfter,0);
+r=resolveCombat(star(5),[fleet(1,10),fleet(2,10)]);assert.equal(r.tied,true);assert.equal(r.ownerAfter,0);assert(r.forces.every(f=>f.survived===0));
+r=resolveCombat(star(10),[fleet(1,5),fleet(1,5)]);assert.equal(r.ships,0,'Same-owner simultaneous fleets combine');r=resolveCombat(star(10),[fleet(1,5)]);r=resolveCombat(star(r.ships),[fleet(1,5)]);assert.equal(r.ships,5,'Separate waves lose concentration advantage');
+r=resolveCombat(star(10,5),[fleet(1,12)]);assert.equal(r.ownerAfter,0);assert.equal(r.ships,5);assert.equal(r.defensePoints,0);assert.equal(r.defense,1);assert.equal(r.forces[0].lost,5);assert.equal(r.forces[0].defenseLost,5);
+r=resolveCombat(star(10,5),[fleet(1,4)]);assert.equal(r.ships,10);assert.equal(r.defensePoints,4,'Defenses absorb losses first');
+r=resolveCombat(star(0,5),[fleet(1,3)]);assert.equal(r.ownerAfter,0);assert.equal(r.ships,0);assert.equal(r.defensePoints,3,'Batteries can fight without ships');
+r=resolveCombat(star(10,5),[fleet(1,20)]);assert.equal(r.ownerAfter,1);assert.equal(r.ships,9);assert.equal(r.defense,0);assert.equal(r.defensePoints,0);
+r=resolveCombat(star(10,5),[fleet(1,15)]);assert(r.tied);assert.equal(r.ships,0);assert.equal(r.defensePoints,0);assert.equal(r.defense,1,'Only conquest destroys installed levels');
+r=resolveCombat(star(0,5),[fleet(0,12)]);assert.equal(r.ships,12);assert.equal(r.defensePoints,5,'Allied arrivals do not fight or become batteries');
+let g=newGame();assert.equal(cost(g.stars[0],'defense'),15);upgrade(g,0,0,'defense');assert.equal(g.credits[0],45);assert.equal(g.stars[0].defense,1);assert.equal(availableDefense(g.stars[0]),5);assert.equal(cost(g.stars[0],'defense'),30);g.credits[0]=29;assert.throws(()=>upgrade(g,0,0,'defense'),/Créditos/);g.stars[0].defensePoints=1;advance(g,false);assert.equal(availableDefense(g.stars[0]),3);advance(g,false);assert.equal(availableDefense(g.stars[0]),5);advance(g,false);assert.equal(availableDefense(g.stars[0]),5);
+// The initial budget now buys two levels, and damaged batteries keep their damage.
+{const affordable=newGame();upgrade(affordable,0,0,'defense');affordable.stars[0].defensePoints=2;upgrade(affordable,0,0,'defense');assert.equal(affordable.credits[0],15);assert.equal(affordable.stars[0].defensePoints,7);assert.equal(defenseCapacity(affordable.stars[0]),10);assert.equal(cost(affordable.stars[0],'defense'),45);assert.throws(()=>upgrade(affordable,0,0,'defense'),/Créditos/);}
+// Automatic routes send only ships, keeping the stationary defense in place.
+g=newGame();g.stars[1].owner=0;upgrade(g,0,0,'defense');setAutoRoute(g,0,0,1,0);advance(g,false);assert.equal(g.stars[0].ships,0);assert.equal(availableDefense(g.stars[0]),5);
+// Forecast and resolution agree on regeneration, arrivals and capture destruction.
+g=newGame();g.credits[0]=100;upgrade(g,0,0,'defense');g.stars[0].ships=0;g.stars[0].industry=0;g.stars[0].defensePoints=2;g.fleets=[{id:90,...fleet(1,2)}];const predicted=forecastStar(g,0,1);advance(g,false);assert.equal(predicted.ships,g.stars[0].ships);assert.equal(predicted.defensePoints,g.stars[0].defensePoints);assert.equal(g.battles[0].forces[0].defense,4,'Regenerate before combat');assert.equal(g.battles[0].defenseAfter,3);assert.equal(g.battles[0].remaining,0);assert.equal(g.battles[0].rule,'moderate-duels');const snapshot=JSON.stringify(g.battles[0]);advance(g,false);assert.equal(JSON.stringify(g.battles[0]),snapshot);
+// Both old save formats migrate without granting defenses or rewriting history.
+for(const version of [1,2]){const old=newGame();old.version=version;if(version===1)delete old.playerCount;old.battles=[{id:'old',remaining:9,forces:[]}];for(const s of old.stars){delete s.defense;delete s.defensePoints;}const migrated=restoreGame(old);assert.equal(migrated.version,3);assert(migrated.stars.every(s=>s.defense===0&&s.defensePoints===0));assert.deepEqual(migrated.battles,old.battles);}
+g=newGame(8);g.credits[7]=200;upgrade(g,7,63,'defense');g.stars[63].defensePoints=2;assert.deepEqual(restoreGame(g),g);assert.equal(restoreGame({...g,stars:g.stars.map(s=>({...s,defensePoints:9999}))}),null);
+// Bots must account for installations and may buy them at a threatened frontier.
+g=newGame(3);g.credits.fill(0);for(const s of g.stars){s.owner=-1;s.ships=10000;s.industry=0;s.x=5000+s.id*500;s.y=5000;}
+Object.assign(g.stars[0],star(0,20,4),{id:0,x:100,y:100});Object.assign(g.stars[9],{owner:1,ships:18,x:0,y:100});assert.equal(botPlan(g,1).orders.filter(f=>f.to===0).length,0,'Do not attack an apparently empty defended system with insufficient force');g.stars[9].ships=50;g.credits[1]=60;assert(botPlan(g,1).upgrades.some(u=>u.type==='defense'));
+// Ship and battery accounting stays bounded for every combat result.
+for(let a=0;a<=30;a++)for(let b=1;b<=30;b++)for(const d of [0,5,10]){const result=resolveCombat(star(a,d),[fleet(1,b),fleet(2,Math.max(1,b-3))]);for(const f of result.forces){assert.equal(f.survived+f.lost,f.total);assert.equal(f.defenseAfter+f.defenseLost,f.defense);assert(f.lost>=0&&f.defenseLost>=0);}assert(result.ships>=0&&result.defensePoints>=0&&result.defensePoints<=defenseCapacity(result));}
+console.log('Moderate combat and batteries passed: examples, simultaneous multi-combat, ties, grouping, defense absorption, empty garrisons, capture, regeneration, costs, routes, forecasts, AI, reports, migration and conservation.');
