@@ -35,11 +35,13 @@ mudança de formatação.
 ## Simulação longa: falha conhecida
 
 `node bot-simulation-test.mjs` tenta terminar onze partidas de oito impérios em até
-200 ticks. O sorteador de mapas captura `Math.random` antes de o teste configurar
-sua semente; os cenários ainda variam entre execuções. Algumas partidas excedem
-o limite. A revisão de legibilidade também tornará essa simulação reproduzível,
-sem modificar regras nem enfraquecer sua asserção de término. A suíte permanece
-separada dos testes de regras enquanto essa pendência é investigada.
+200 ticks. Na revisão de 05/11/2026, o teste passou a importar o motor depois de
+instalar sua semente: o sorteador de mapas captura `Math.random` ao carregar o
+módulo, e antes os mapas não eram reproduzíveis. Com a semente completa, a quarta
+partida, mapa `v1-8-130096`, ultrapassa esse limite. O mesmo resultado ocorre com
+o motor anterior à revisão de legibilidade. Isso é uma pendência de
+simulação/balanceamento: as regras não prometem término nesse prazo. A asserção de
+término foi preservada, sem afrouxar o teste ou recalibrar os bots.
 
 Para incluir essa suíte e receber seu status de falha, execute:
 

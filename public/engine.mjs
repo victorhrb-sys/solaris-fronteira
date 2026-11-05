@@ -1,3 +1,5 @@
+// Shared rules for local play and authoritative online rooms. State-changing
+// commands mutate the supplied game; playerView is the boundary for hidden data.
 import {createBotProfile, ensureBotProfiles} from './bot-profiles.mjs';
 import {planBot} from './bot-planner.mjs';
 import {pickApprovedMap} from './map-picker.mjs';
@@ -18,16 +20,34 @@ export function newGame(playerCount=2){
  const stars=layout.points.map(([x,y],id)=>{const owner=homes.indexOf(id),home=owner>=0;return {id,name:home?homeNames[owner]:`${names[id%names.length]} ${Math.floor(id/names.length)+1}`,x,y,owner,ships:home?54:5+Math.floor(Math.random()*13),economy:home?3:1,industry:home?3:1,defense:0,defensePoints:0};});
  return {version:3,mapId:layout.id,mapSeed:layout.seed,mapVersion:layout.version,playerCount,botProfiles:Array.from({length:playerCount},()=>createBotProfile()),botStates:Array.from({length:playerCount},()=>({focus:null,since:0})),tick:0,credits:Array(playerCount).fill(60),stars,fleets:[],orders:[],battles:[],autoRoutes:[],nextId:1,winner:null,logs:[{tick:0,text:`Controle ${Math.ceil(stars.length/2)} de ${stars.length} estrelas para vencer.`,kind:'info'}]};
 }
-export function restoreGame(saved){
- if(!saved||![1,2,3].includes(saved.version)||!Number.isInteger(saved.tick)||saved.tick<0)return null;
- const n=saved.version===1?2:saved.playerCount;
- if(!Number.isInteger(n)||n<2||n>8||saved.stars?.length!==n*9||saved.credits?.length!==n||!Array.isArray(saved.fleets)||!Array.isArray(saved.orders))return null;
- if(!saved.stars.every((s,i)=>s.id===i&&Number.isFinite(s.x)&&Number.isFinite(s.y)&&Number.isInteger(s.owner)&&s.owner>=-1&&s.owner<n&&Number.isInteger(s.ships)&&s.ships>=0))return null;
- const g=structuredClone(saved);if(g.version===1&&g.winner===2)g.winner=-1;
- if(g.version<3)for(const s of g.stars){s.defense=0;s.defensePoints=0;}
- if(!g.stars.every(s=>Number.isSafeInteger(s.defense)&&s.defense>=0&&Number.isSafeInteger(s.defensePoints)&&s.defensePoints>=0&&s.defensePoints<=s.defense*5))return null;
- g.version=3;g.playerCount=n;g.battles=Array.isArray(g.battles)?g.battles:[];g.autoRoutes=Array.isArray(g.autoRoutes)?g.autoRoutes:[];
- ensureBotProfiles(g);if(g.winner===null)checkVictory(g);return g;
+// Migrate a copy: loading must preserve the saved geometry and never draw a map.
+export function restoreGame(saved) {
+    if (!saved || ![1, 2, 3].includes(saved.version) || !Number.isInteger(saved.tick) || saved.tick < 0)
+        return null;
+    const n = saved.version === 1 ? 2 : saved.playerCount;
+    if (!Number.isInteger(n) || n < 2 || n > 8 || saved.stars?.length !== n * 9 || saved.credits?.length !== n || !Array.isArray(saved.fleets) || !Array.isArray(saved.orders))
+        return null;
+    if (!saved.stars.every((s, i) => s.id === i && Number.isFinite(s.x) && Number.isFinite(s.y) && Number.isInteger(s.owner) && s.owner >= -1 && s.owner < n && Number.isInteger(s.ships) && s.ships >= 0))
+        return null;
+    const g = structuredClone(saved);
+    // Version 1 used owner 2 for a draw, before games supported a third empire.
+    if (g.version === 1 && g.winner === 2)
+        g.winner = -1;
+    if (g.version < 3)
+        for (const s of g.stars) {
+            s.defense = 0;
+            s.defensePoints = 0;
+        }
+    if (!g.stars.every(s => Number.isSafeInteger(s.defense) && s.defense >= 0 && Number.isSafeInteger(s.defensePoints) && s.defensePoints >= 0 && s.defensePoints <= s.defense * 5))
+        return null;
+    g.version = 3;
+    g.playerCount = n;
+    g.battles = Array.isArray(g.battles) ? g.battles : [];
+    g.autoRoutes = Array.isArray(g.autoRoutes) ? g.autoRoutes : [];
+    ensureBotProfiles(g);
+    if (g.winner === null)
+        checkVictory(g);
+    return g;
 }
 export function checkVictory(g){
  if(g.winner!==null)return;
@@ -44,11 +64,44 @@ export function visibleStars(g,owner){return new Set(g.stars.filter(s=>pointVisi
 export function fleetPosition(g,f,progress=0){if(Number.isFinite(f.x)&&Number.isFinite(f.y))return {x:f.x,y:f.y};const a=g.stars[f.from],b=g.stars[f.to],t=g.orders?.some(o=>o.id===f.id)?.16:1-f.remaining/f.total+progress/f.total;return {x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t};}
 export function movementVisible(g,owner,f){if(f.owner===owner)return true;const a=fleetPosition(g,f,0),b=fleetPosition(g,f,1),dx=b.x-a.x,dy=b.y-a.y,len=dx*dx+dy*dy;return g.stars.some(s=>{if(s.owner!==owner)return false;const t=len?Math.max(0,Math.min(1,((s.x-a.x)*dx+(s.y-a.y)*dy)/len)):0;return distance(s,{x:a.x+t*dx,y:a.y+t*dy})<=VISION+1e-9;});}
 export function battleVisible(b,owner){return b.observedBy?.includes(owner)??b.forces.some(f=>f.owner===owner&&f.total+ (f.defense??0)>0);}
-export function playerView(g,owner){
- const visible=visibleStars(g,owner),battles=(g.battles||[]).filter(b=>battleVisible(b,owner)).map(({observedBy,...b})=>b),ids=new Set(battles.map(b=>b.id));
- const stars=g.stars.map(s=>visible.has(s.id)?{...s,visible:true}:{id:s.id,name:s.name,x:s.x,y:s.y,owner:null,ships:null,economy:null,industry:null,defense:null,defensePoints:null,visible:false});
- const fleets=g.fleets.flatMap(f=>{if(f.owner===owner)return [{...f}];const point=fleetPosition(g,f);if(!pointVisible(g,owner,point))return [];const a=g.stars[f.from],b=g.stars[f.to],heading=a&&b?Math.atan2(b.y-a.y,b.x-a.x)*180/Math.PI:f.heading;return [visible.has(f.from)&&visible.has(f.to)?{...f}:{id:f.id,owner:f.owner,ships:f.ships,...point,...(Number.isFinite(heading)?{heading}:{})}];});
- return {version:g.version,playerCount:g.playerCount,tick:g.tick,credits:g.credits.map((c,i)=>i===owner?c:null),stars,fleets,orders:g.orders.filter(f=>f.owner===owner).map(f=>({...f})),autoRoutes:(g.autoRoutes||[]).filter(r=>r.owner===owner),battles,logs:g.logs.filter(l=>l.battleId?ids.has(l.battleId):!l.observedBy||l.observedBy.includes(owner)).map(({observedBy,...l})=>l),winner:g.winner,winningStars:g.winner>=0&&g.winner!==null?totals(g,g.winner).stars:null};
+// Construct the public perspective explicitly; spreading the full game here
+// would expose opponents' credits, preparation, and bot state in online rooms.
+export function playerView(g, owner) {
+    const visible = visibleStars(g, owner),
+        battles = (g.battles || []).filter(b => battleVisible(b, owner))
+            .map(({ observedBy, ...b }) => b),
+        ids = new Set(battles.map(b => b.id));
+    const stars = g.stars.map(s => visible.has(s.id) ? { ...s, visible: true } : {
+        id: s.id, name: s.name, x: s.x, y: s.y,
+        owner: null, ships: null, economy: null, industry: null,
+        defense: null, defensePoints: null, visible: false
+    });
+    const fleets = g.fleets.flatMap(f => {
+        if (f.owner === owner)
+            return [{ ...f }];
+        const point = fleetPosition(g, f);
+        if (!pointVisible(g, owner, point))
+            return [];
+        const a = g.stars[f.from], b = g.stars[f.to],
+            heading = a && b ? Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI : f.heading;
+        // Seeing a fleet does not reveal a hidden origin, destination, or ETA.
+        return [visible.has(f.from) && visible.has(f.to) ? { ...f } : {
+            id: f.id, owner: f.owner, ships: f.ships, ...point,
+            ...(Number.isFinite(heading) ? { heading } : {})
+        }];
+    });
+    return {
+        version: g.version, playerCount: g.playerCount, tick: g.tick,
+        credits: g.credits.map((c, i) => i === owner ? c : null),
+        stars, fleets,
+        orders: g.orders.filter(f => f.owner === owner).map(f => ({ ...f })),
+        autoRoutes: (g.autoRoutes || []).filter(r => r.owner === owner),
+        battles,
+        logs: g.logs.filter(l => l.battleId ? ids.has(l.battleId) : !l.observedBy || l.observedBy.includes(owner))
+            .map(({ observedBy, ...l }) => l),
+        winner: g.winner,
+        winningStars: g.winner >= 0 && g.winner !== null ? totals(g, g.winner).stars : null
+    };
 }
 export const travel=(a,b)=>Math.max(1,Math.ceil(distance(a,b)/SPEED));
 export const cost=(s,type)=>({economy:20,industry:24,defense:15}[type])*((s[type]??0)+1);
@@ -111,22 +164,69 @@ export function forecastStar(g,id,ticks,planned=[]){
 }
 export const botPlan=planBot;
 export function applyBotState(g,owner,plan){ensureBotProfiles(g);g.botStates[owner]=plan.botState??{focus:null,since:g.tick};}
-export function advance(g,withBot=true,movementLog=null){if(g.winner!==null)return;const plans=withBot?g.credits.map((_,owner)=>owner?{owner,...botPlan(g,owner)}:null).filter(Boolean):[];for(const plan of plans){applyBotState(g,plan.owner,plan);for(const u of plan.upgrades)upgrade(g,plan.owner,u.id,u.type);for(const f of plan.orders)queue(g,plan.owner,f.from,f.to,f.ships);}
-g.fleets.push(...g.orders);g.orders=[];g.tick++;
-for(const s of g.stars)if(s.owner!==-1){g.credits[s.owner]+=s.economy*3;s.ships+=s.industry*2;s.defensePoints=defenseAfterTicks(s,1);}
-sendAutoRoutes(g);
-const sightBefore=g.credits.map((_,owner)=>visibleStars(g,owner));
-const arrivals=new Map();for(const f of g.fleets){if(movementLog)movementLog.push({...f});f.remaining--;if(f.remaining<=0){if(!arrivals.has(f.to))arrivals.set(f.to,[]);arrivals.get(f.to).push(f);}}
-g.fleets=g.fleets.filter(f=>f.remaining>0);
-for(const [id,fs] of arrivals){const s=g.stars[id],before=s.owner,result=resolveCombat(s,fs);s.owner=result.ownerAfter;s.ships=result.ships;s.defense=result.defense;s.defensePoints=result.defensePoints;
- if(result.forces.length>1){
-  const battle={id:`${g.tick}-${id}`,tick:g.tick,starId:id,starName:s.name,defender:before,ownerAfter:s.owner,captured:before!==s.owner,remaining:s.ships,observedBy:g.credits.map((_,owner)=>owner).filter(owner=>sightBefore[owner].has(id)||result.forces.some(f=>f.owner===owner&&f.force>0)),rule:'moderate-duels',tied:result.tied,rounds:result.rounds,remainingForce:result.remainingForce,defenseAfter:result.defensePoints,forces:result.forces};
-  g.battles=[battle,...(g.battles||[])].slice(0,80);const label=factionName(s.owner);log(g,`${s.name}: ${label} ${before!==s.owner?'conquistou a estrela':'manteve a posição'}. ${s.ships} naves${result.defensePoints?` · ${result.defensePoints} defesa`:''}.`,s.owner===0?'good':'war');g.logs[0].battleId=battle.id;
- }else if(s.owner===0)log(g,`${s.name} recebeu ${fs.reduce((n,f)=>n+f.ships,0)} naves de reforço.`,'good',[0]);
+export function advance(g, withBot = true, movementLog = null) {
+    if (g.winner !== null)
+        return;
+    // Plan every bot before applying any plan, so iteration order gives no
+    // empire advance knowledge. Online rooms supply their own plans (withBot=false).
+    const plans = withBot ? g.credits.map((_, owner) => owner ? { owner, ...botPlan(g, owner) } : null).filter(Boolean) : [];
+    for (const plan of plans) {
+        applyBotState(g, plan.owner, plan);
+        for (const u of plan.upgrades)
+            upgrade(g, plan.owner, u.id, u.type);
+        for (const f of plan.orders)
+            queue(g, plan.owner, f.from, f.to, f.ships);
+    }
+    // Manual reservations depart first; production then supplies automatic routes.
+    g.fleets.push(...g.orders);
+    g.orders = [];
+    g.tick++;
+    for (const s of g.stars)
+        if (s.owner !== -1) {
+            g.credits[s.owner] += s.economy * 3;
+            s.ships += s.industry * 2;
+            s.defensePoints = defenseAfterTicks(s, 1);
+        }
+    sendAutoRoutes(g);
+    const sightBefore = g.credits.map((_, owner) => visibleStars(g, owner));
+    // Group all arrivals before resolving combat. A newly arrived fleet cannot
+    // depart along another automatic route until the next tick.
+    const arrivals = new Map();
+    for (const f of g.fleets) {
+        if (movementLog)
+            movementLog.push({ ...f });
+        f.remaining--;
+        if (f.remaining <= 0) {
+            if (!arrivals.has(f.to))
+                arrivals.set(f.to, []);
+            arrivals.get(f.to).push(f);
+        }
+    }
+    g.fleets = g.fleets.filter(f => f.remaining > 0);
+    for (const [id, fs] of arrivals) {
+        const s = g.stars[id], before = s.owner, result = resolveCombat(s, fs);
+        s.owner = result.ownerAfter;
+        s.ships = result.ships;
+        s.defense = result.defense;
+        s.defensePoints = result.defensePoints;
+        if (result.forces.length > 1) {
+            const battle = { id: `${g.tick}-${id}`, tick: g.tick, starId: id, starName: s.name, defender: before, ownerAfter: s.owner, captured: before !== s.owner, remaining: s.ships, observedBy: g.credits.map((_, owner) => owner).filter(owner => sightBefore[owner].has(id) || result.forces.some(f => f.owner === owner && f.force > 0)), rule: 'moderate-duels', tied: result.tied, rounds: result.rounds, remainingForce: result.remainingForce, defenseAfter: result.defensePoints, forces: result.forces };
+            g.battles = [battle, ...(g.battles || [])].slice(0, 80);
+            const label = factionName(s.owner);
+            log(g, `${s.name}: ${label} ${before !== s.owner ? 'conquistou a estrela' : 'manteve a posição'}. ${s.ships} naves${result.defensePoints ? ` · ${result.defensePoints} defesa` : ''}.`, s.owner === 0 ? 'good' : 'war');
+            g.logs[0].battleId = battle.id;
+        }
+        else if (s.owner === 0)
+            log(g, `${s.name} recebeu ${fs.reduce((n, f) => n + f.ships, 0)} naves de reforço.`, 'good', [0]);
+    }
+    // Reports retain who could witness this tick, even after coverage later changes.
+    const sightAfter = g.credits.map((_, owner) => visibleStars(g, owner));
+    for (const battle of g.battles.filter(b => b.tick === g.tick))
+        for (let owner = 0; owner < g.playerCount; owner++)
+            if (sightAfter[owner].has(battle.starId) && !battle.observedBy.includes(owner))
+                battle.observedBy.push(owner);
+    validateAutoRoutes(g);
+    // Victory is checked once, after every star has resolved this same tick.
+    checkVictory(g);
+    return g;
 }
-// Reports retain who could witness this tick, even after coverage later changes.
-const sightAfter=g.credits.map((_,owner)=>visibleStars(g,owner));
-for(const battle of g.battles.filter(b=>b.tick===g.tick))for(let owner=0;owner<g.playerCount;owner++)if(sightAfter[owner].has(battle.starId)&&!battle.observedBy.includes(owner))battle.observedBy.push(owner);
-validateAutoRoutes(g);
-checkVictory(g);
-return g;}

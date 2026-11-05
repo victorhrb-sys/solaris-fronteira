@@ -4,6 +4,8 @@ import {initLanding} from './landing.mjs';
 import {playerView,pointVisible,movementVisible,fleetPosition,newGame,restoreGame,defenseCapacity,availableDefense,defenseAfterTicks,factionName,factionColors,victoryTarget,mapBounds,queue as localqueue,cancel as localcancel,upgrade as localupgrade,advance,totals,cost,distance,travel,RANGE,setAutoRoute as localsetAutoRoute,pauseAutoRoute as localpauseAutoRoute,removeAutoRoute as localremoveAutoRoute} from './engine.mjs';
 let me=0;
 const $=s=>document.querySelector(s),KEY='solaris-fronteira-v1',UIKEY='solaris-fronteira-display';
+// world holds the local save; g is the current player's filtered perspective.
+// Online play replaces g with a server view and keeps the local save separate.
 let world=null,g,selected=0,target=null,amount=54,panel=null,dispatch=false,upgradeDetails=false,fleetFilter='all',starFilter='all',eventsTab='all',battleFocus=null,routeEditor=false,autoTarget=null,autoReserve=0,picking=false,toastTimer;
 let turnPlayback=null,turnFrame=0,creditTimer=0;
 let prefs={names:true,ships:true,infrastructure:false,routes:true,range:true};

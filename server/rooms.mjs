@@ -1,3 +1,5 @@
+// Room protocol, independent of HTTP. D1 stores a confirmed game plus private
+// per-member actions; only roomView may cross the boundary back to a client.
 import {newGame,playerView,queue,upgrade,setAutoRoute,pauseAutoRoute,removeAutoRoute,botPlan,applyBotState,advance,totals} from '../public/engine.mjs';
 import {turnSummary} from './turn-summary.mjs';
 
@@ -22,24 +24,47 @@ function action(g,owner,a){
   default:fail('Ação desconhecida.');
  }
 }
-export function draft(room,p){const g=structuredClone(room.game);for(const a of p.actions)action(g,p.owner,a);return g;}
+// Replay just this member's preparation on a copy, never on the confirmed game.
+export function draft(room, p) {
+    const g = structuredClone(room.game);
+    for (const a of p.actions)
+        action(g, p.owner, a);
+    return g;
+}
 function active(room){return room.members.filter(p=>!p.resigned&&(totals(room.game,p.owner).stars+totals(room.game,p.owner).ships)>0);}
-function resolve(room){
- const humans=active(room);if(!humans.length||!humans.every(p=>p.ready)||room.game.winner!==null)return;
- const g=room.game,botOwners=Array.from({length:room.capacity},(_,i)=>i).filter(i=>!room.members.some(p=>p.owner===i&&!p.resigned));
- const plans=botOwners.map(owner=>({owner,...botPlan(g,owner)}));
- const drafts=room.members.filter(p=>!p.resigned).map(p=>({owner:p.owner,g:draft(room,p)}));
- for(const {owner,g:d} of drafts){
-  g.credits[owner]=d.credits[owner];
-  for(const s of d.stars)if(s.owner===owner)g.stars[s.id]={...s};
-  g.orders.push(...d.orders.filter(o=>o.owner===owner).map(o=>({...o,id:g.nextId++})));
-  g.autoRoutes=[...g.autoRoutes.filter(r=>r.owner!==owner),...d.autoRoutes.filter(r=>r.owner===owner)];
- }
- for(const p of plans){applyBotState(g,p.owner,p);for(const u of p.upgrades)upgrade(g,p.owner,u.id,u.type);for(const f of p.orders)queue(g,p.owner,f.from,f.to,f.ships);}
- const before=structuredClone(g),movements=[];
- advance(g,false,movements);
- room.turnSummaries=Object.fromEntries(room.members.map(p=>[p.owner,turnSummary(before,g,movements,p.owner)]));
- for(const p of room.members){p.ready=false;p.actions=[];}
+function resolve(room) {
+    const humans = active(room);
+    if (!humans.length || !humans.every(p => p.ready) || room.game.winner !== null)
+        return;
+    const g = room.game, botOwners = Array.from({ length: room.capacity }, (_, i) => i).filter(i => !room.members.some(p => p.owner === i && !p.resigned));
+    // All plans and drafts see the same confirmed position. Build them before
+    // merging anyone's purchases or reserved ships into the shared game.
+    const plans = botOwners.map(owner => ({ owner, ...botPlan(g, owner) }));
+    const drafts = room.members.filter(p => !p.resigned).map(p => ({ owner: p.owner, g: draft(room, p) }));
+    for (const { owner, g: d } of drafts) {
+        g.credits[owner] = d.credits[owner];
+        for (const s of d.stars)
+            if (s.owner === owner)
+                g.stars[s.id] = { ...s };
+        // Drafts share the old nextId; assign unique fleet IDs when merging them.
+        g.orders.push(...d.orders.filter(o => o.owner === owner).map(o => ({ ...o, id: g.nextId++ })));
+        g.autoRoutes = [...g.autoRoutes.filter(r => r.owner !== owner), ...d.autoRoutes.filter(r => r.owner === owner)];
+    }
+    for (const p of plans) {
+        applyBotState(g, p.owner, p);
+        for (const u of p.upgrades)
+            upgrade(g, p.owner, u.id, u.type);
+        for (const f of p.orders)
+            queue(g, p.owner, f.from, f.to, f.ships);
+    }
+    const before = structuredClone(g), movements = [];
+    // Bots have already planned, including resigned humans. Do not plan twice.
+    advance(g, false, movements);
+    room.turnSummaries = Object.fromEntries(room.members.map(p => [p.owner, turnSummary(before, g, movements, p.owner)]));
+    for (const p of room.members) {
+        p.ready = false;
+        p.actions = [];
+    }
 }
 export function roomView(room,hash){
  const p=authenticate(room,hash),playing=room.game!==null,humans=playing?active(room):room.members;
@@ -60,48 +85,83 @@ export async function createRoom(db,input,key){
  await db.prepare('INSERT OR IGNORE INTO rooms (code,revision,data,updated_at) VALUES (?,0,?,?)').bind(code,JSON.stringify(room),Date.now()).run();
  return accessRoom(db,code,key);
 }
-export async function accessRoom(db,code,key,input=null){
- if(!/^[A-F0-9]{12}$/.test(code))fail('Código da sala inválido.');
- const hash=await hashKey(key);
- for(let attempt=0;attempt<12;attempt++){
-  const row=await db.prepare('SELECT data,revision FROM rooms WHERE code = ?').bind(code).first();
-  if(!row)fail('Sala não encontrada.',404);
-  const room=JSON.parse(row.data);room.revision=row.revision;
-  if(!input)return roomView(room,hash);
-  if(typeof input.requestId!=='string'||!/^[a-zA-Z0-9-]{16,64}$/.test(input.requestId))fail('Identificador de ação inválido.');
-  let p=room.members.find(m=>m.hash===hash);
-  if(p?.requests.includes(input.requestId))return roomView(room,hash);
-  if(input.type==='join'){
-   if(p)return roomView(room,hash);
-   if(room.game||room.members.length>=room.capacity)fail('A sala já começou ou está cheia.');
-   p={owner:room.members.length,name:nameOf(input.name),hash,actions:[],ready:false,resigned:false,requests:[]};room.members.push(p);
-  }else{
-   p=authenticate(room,hash);
-   if(input.type==='start'){
-    if(p.owner!==room.host)fail('Só o anfitrião pode iniciar.',403);
-    if(room.game)fail('A partida já começou.',409);
-    if(room.members.length<2)fail('Aguarde pelo menos dois humanos.');
-    room.game=newGame(room.capacity);
-   }else{
-    if(!room.game||room.game.winner!==null)fail('A partida não está em andamento.',409);
-    if(input.tick!==room.game.tick)fail('O turno mudou. Confira a partida e tente novamente.',409);
-    if(p.resigned)fail('Seu império está sob controle de um bot.',403);
-    if(p.requestTick!==room.game.tick){p.requests=[];p.requestTick=room.game.tick;}
-    if(input.type==='resign'){p.resigned=true;p.ready=false;p.actions=[];}
-    else if(input.type==='ready'){p.ready=Boolean(input.ready);}
-    else if(input.type==='action'){
-     if(p.ready)fail('Desfaça a confirmação antes de alterar ordens.',409);
-     if(p.actions.length>=200)fail('Limite de 200 ações por turno.');
-     action(draft(room,p),p.owner,input.action);p.actions.push(input.action);
-    }else fail('Comando desconhecido.');
-    resolve(room);
-   }
-  }
-  // Preserve all request ids within a tick. Old ticks are rejected after reset.
-  p.requests.push(input.requestId);
-  room.revision++;
-  const result=await db.prepare('UPDATE rooms SET data = ?, revision = ?, updated_at = ? WHERE code = ? AND revision = ?').bind(JSON.stringify(room),room.revision,Date.now(),code,row.revision).run();
-  if(result.meta.changes===1)return roomView(room,hash);
- }
- fail('A sala está ocupada. Tente novamente.',409);
+export async function accessRoom(db, code, key, input = null) {
+    if (!/^[A-F0-9]{12}$/.test(code))
+        fail('Código da sala inválido.');
+    const hash = await hashKey(key);
+    // Optimistic concurrency: after a conflicting write, reread and revalidate
+    // the request. Never publish a result computed from an obsolete revision.
+    for (let attempt = 0; attempt < 12; attempt++) {
+        const row = await db.prepare('SELECT data,revision FROM rooms WHERE code = ?').bind(code).first();
+        if (!row)
+            fail('Sala não encontrada.', 404);
+        const room = JSON.parse(row.data);
+        room.revision = row.revision;
+        if (!input)
+            return roomView(room, hash);
+        if (typeof input.requestId !== 'string' || !/^[a-zA-Z0-9-]{16,64}$/.test(input.requestId))
+            fail('Identificador de ação inválido.');
+        let p = room.members.find(m => m.hash === hash);
+        // Retries return the current view without repeating a successful action.
+        if (p?.requests.includes(input.requestId))
+            return roomView(room, hash);
+        if (input.type === 'join') {
+            if (p)
+                return roomView(room, hash);
+            if (room.game || room.members.length >= room.capacity)
+                fail('A sala já começou ou está cheia.');
+            p = { owner: room.members.length, name: nameOf(input.name), hash, actions: [], ready: false, resigned: false, requests: [] };
+            room.members.push(p);
+        }
+        else {
+            p = authenticate(room, hash);
+            if (input.type === 'start') {
+                if (p.owner !== room.host)
+                    fail('Só o anfitrião pode iniciar.', 403);
+                if (room.game)
+                    fail('A partida já começou.', 409);
+                if (room.members.length < 2)
+                    fail('Aguarde pelo menos dois humanos.');
+                room.game = newGame(room.capacity);
+            }
+            else {
+                if (!room.game || room.game.winner !== null)
+                    fail('A partida não está em andamento.', 409);
+                if (input.tick !== room.game.tick)
+                    fail('O turno mudou. Confira a partida e tente novamente.', 409);
+                if (p.resigned)
+                    fail('Seu império está sob controle de um bot.', 403);
+                if (p.requestTick !== room.game.tick) {
+                    p.requests = [];
+                    p.requestTick = room.game.tick;
+                }
+                if (input.type === 'resign') {
+                    p.resigned = true;
+                    p.ready = false;
+                    p.actions = [];
+                }
+                else if (input.type === 'ready') {
+                    p.ready = Boolean(input.ready);
+                }
+                else if (input.type === 'action') {
+                    if (p.ready)
+                        fail('Desfaça a confirmação antes de alterar ordens.', 409);
+                    if (p.actions.length >= 200)
+                        fail('Limite de 200 ações por turno.');
+                    action(draft(room, p), p.owner, input.action);
+                    p.actions.push(input.action);
+                }
+                else
+                    fail('Comando desconhecido.');
+                resolve(room);
+            }
+        }
+        // Preserve all request ids within a tick. Old ticks are rejected after reset.
+        p.requests.push(input.requestId);
+        room.revision++;
+        const result = await db.prepare('UPDATE rooms SET data = ?, revision = ?, updated_at = ? WHERE code = ? AND revision = ?').bind(JSON.stringify(room), room.revision, Date.now(), code, row.revision).run();
+        if (result.meta.changes === 1)
+            return roomView(room, hash);
+    }
+    fail('A sala está ocupada. Tente novamente.', 409);
 }
