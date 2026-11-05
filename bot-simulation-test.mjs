@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import {newGame, botPlan, applyBotState, advance, queue, upgrade} from './public/engine.mjs';
 import {BOT_TRAITS} from './public/bot-profiles.mjs';
 
 // Reproducible mixed matches exercise every active personality, without claiming
@@ -8,6 +7,9 @@ let seed=20261011;
 const random=Math.random;
 Math.random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296;};
 try {
+ // map-picker captures Math.random when the engine is imported. Install the
+ // seeded generator first so map selection is reproducible as well as bot setup.
+ const {newGame, botPlan, applyBotState, advance, queue, upgrade} = await import('./public/engine.mjs');
  const profiles=[];
  for(const territory of BOT_TRAITS.territory) for(const risk of BOT_TRAITS.risk)
  for(const deployment of BOT_TRAITS.deployment) for(const investment of BOT_TRAITS.investment)
